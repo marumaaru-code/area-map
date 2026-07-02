@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Instagram運用支援ツール（エリアマップ分析）
 
-## Getting Started
+工務店のInstagram運用担当者向けの社内Webツールです。
 
-First, run the development server:
+## 機能
+
+- **エリアマップ** (`/map`): OpenStreetMapベースの地図上に工務店・結婚式場・道の駅・保育園・家具屋をピン表示。施設の手動追加・Instagram URL登録が可能。
+- **狙い目エリア** (`/areas`): 指定エリアをグリッド分割してスコアリング（競合工務店少 × 関連施設多 = 高スコア）。
+- **投稿企画** (`/posts`): 投稿ログを蓄積し、Claude AIが次の企画案を3〜5個提案。
+- **類似アカウント** (`/similar`): 手動メモ済みの工務店を自社コンセプトとAIが比較・ランキング。
+
+## セットアップ
+
+### 1. 環境変数
+
+`.env.local` を編集し、以下を設定してください：
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciO...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### 2. Supabaseのテーブル作成
+
+Supabaseプロジェクトの「SQL Editor」に `supabase-schema.sql` の内容を貼り付けて実行してください。
+
+### 3. 開発サーバー起動
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+http://localhost:3000 にアクセスすると `/map` にリダイレクトされます。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## ⚠️ 工務店データの精度について
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+工務店・建築会社はOpenStreetMap（OSM）上のタグ付けが日本では不十分なため、**Overpass APIの検索結果だけでは対象施設を網羅できない場合があります**。
 
-## Learn More
+実際の運用では、以下のフローを推奨します：
+1. Overpass APIで取得されたピンを確認
+2. 不足している工務店は「施設を手動追加」ボタンから追加
+3. 各施設のメモ欄にテイスト・価格帯・施工エリアを記録
 
-To learn more about Next.js, take a look at the following resources:
+## 技術スタック
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **フロントエンド**: Next.js (App Router) + TypeScript + Tailwind CSS
+- **地図**: Leaflet.js + react-leaflet（無料・APIキー不要）
+- **POI検索**: Overpass API（OpenStreetMapデータ、無料）
+- **住所変換**: Nominatim API（OSM公式、無料）
+- **DB**: Supabase（無料枠）
+- **AI**: Anthropic Claude API (`claude-sonnet-4-6`)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## デプロイ（Vercel）
 
-## Deploy on Vercel
+Vercelに接続し、環境変数（`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`）をVercelの設定画面から追加してください。
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
