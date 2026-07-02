@@ -62,22 +62,32 @@ export default function MapView() {
       const color = CATEGORY_COLORS[facility.category];
       const icon = makePinIcon(color);
       const marker = L.marker([facility.lat, facility.lng], { icon });
-      marker.on("click", async () => {
+
+      async function onPinActivate() {
         let f = facility;
-        // Try to load saved data from Supabase
         const { data } = await supabase
           .from("facilities")
           .select("*")
           .eq("id", facility.id)
           .single();
         if (data) f = { ...facility, ...data };
-        // Reverse geocode if address missing
         if (!f.address) {
           const address = await reverseGeocode(f.lat, f.lng);
           f = { ...f, address };
         }
         setSelected(f);
+      }
+
+      // click (PC) と touchend (スマホ・タブレット) 両方を捕捉
+      marker.on("click", onPinActivate);
+      marker.on("touchend", (e) => {
+        // touchend はデフォルトイベントを止めないと click と二重発火する
+        if ((e as unknown as { originalEvent: TouchEvent }).originalEvent) {
+          (e as unknown as { originalEvent: TouchEvent }).originalEvent.preventDefault();
+        }
+        onPinActivate();
       });
+
       marker.addTo(map);
       markersRef.current.set(facility.id, marker);
     },
@@ -136,9 +146,11 @@ export default function MapView() {
       });
 
       const map = L.map(mapContainerRef.current!).setView([34.6937, 135.5023], 13);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© OpenStreetMap contributors",
-        maxZoom: 19,
+      // Carto Voyager: Google Maps ライクなポップなデザイン
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
+        subdomains: "abcd",
+        maxZoom: 20,
       }).addTo(map);
 
       mapRef.current = map;
@@ -189,57 +201,68 @@ export default function MapView() {
   }
 
   return (
-    <div className="flex h-full relative">
-      {/* Map */}
-      <div className="flex-1 relative">
-        <div ref={mapContainerRef} className="w-full h-full" />
+    <div className="relative w-full h-full">
+      {/* Map (full bleed) */}
+      <div ref={mapContainerRef} className="w-full h-full" />
 
-        {/* Category filter */}
-        <div className="absolute top-3 left-3 z-[1000] bg-white rounded-lg shadow p-2 space-y-1">
-          {ACTIVE_CATEGORIES.map((cat) => (
-            <label key={cat} className="flex items-center gap-1.5 cursor-pointer text-xs select-none">
-              <span
-                className="w-3 h-3 rounded-full inline-block"
-                style={{ backgroundColor: CATEGORY_COLORS[cat] }}
-              />
-              <input
-                type="checkbox"
-                checked={activeCategories.has(cat)}
-                onChange={() => toggleCategory(cat)}
-                className="hidden"
-              />
-              <span className={activeCategories.has(cat) ? "text-gray-800" : "text-gray-400"}>
-                {CATEGORY_LABELS[cat]}
-              </span>
-            </label>
-          ))}
-        </div>
-
-        {/* Add facility button */}
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="absolute bottom-4 left-3 z-[1000] bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-2 rounded-lg shadow"
-        >
-          + 施設を手動追加
-        </button>
-
-        {/* Loading indicator */}
-        {loading && (
-          <div className="absolute top-3 right-3 z-[1000] bg-white rounded-full shadow px-3 py-1 text-xs text-gray-500">
-            読み込み中...
-          </div>
-        )}
+      {/* Category filter */}
+      <div className="absolute top-3 left-3 z-[1000] bg-white rounded-lg shadow p-2 space-y-1">
+        {ACTIVE_CATEGORIES.map((cat) => (
+          <label key={cat} className="flex items-center gap-1.5 cursor-pointer text-xs select-none">
+            <span
+              className="w-3 h-3 rounded-full inline-block flex-shrink-0"
+              style={{ backgroundColor: CATEGORY_COLORS[cat] }}
+            />
+            <input
+              type="checkbox"
+              checked={activeCategories.has(cat)}
+              onChange={() => toggleCategory(cat)}
+              className="hidden"
+            />
+            <span className={activeCategories.has(cat) ? "text-gray-800" : "text-gray-400"}>
+              {CATEGORY_LABELS[cat]}
+            </span>
+          </label>
+        ))}
       </div>
 
-      {/* Side panel */}
-      {selected && (
-        <div className="w-80 border-l border-gray-200 overflow-hidden flex-shrink-0">
-          <FacilityPanel
-            facility={selected}
-            onClose={() => setSelected(null)}
-            onUpdated={handleFacilityUpdated}
-          />
+      {/* Add facility button */}
+      <button
+        onClick={() => setShowAddModal(true)}
+        className="absolute bottom-8 left-3 z-[1000] bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-2 rounded-lg shadow"
+      >
+        ＋ 施設を手動追加
+      </button>
+
+      {/* Loading indicator */}
+      {loading && (
+        <div className="absolute top-3 right-3 z-[1000] bg-white rounded-full shadow px-3 py-1 text-xs text-gray-500">
+          読み込み中…
         </div>
+      )}
+
+      {/* Detail panel — slides up from bottom on mobile, right-side panel on desktop */}
+      {selected && (
+        <>
+          {/* Backdrop (mobile) */}
+          <div
+            className="fixed inset-0 z-[2000] bg-black/20 md:hidden"
+            onClick={() => setSelected(null)}
+          />
+          <div className="
+            fixed z-[2001]
+            bottom-0 left-0 right-0 h-[70vh]
+            md:absolute md:top-0 md:right-0 md:bottom-0 md:left-auto md:h-full md:w-80
+            bg-white shadow-2xl overflow-hidden
+            rounded-t-2xl md:rounded-none
+          ">
+            <FacilityPanel
+              facility={selected}
+              onClose={() => setSelected(null)}
+              onUpdated={handleFacilityUpdated}
+            />
+          </div>
+        </>
       )}
 
       {showAddModal && (
