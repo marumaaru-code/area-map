@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Facility, FacilityCategory } from "@/types";
-import { CATEGORY_COLORS, CATEGORY_LABELS } from "@/types";
+import { CATEGORY_COLORS, CATEGORY_EMOJI, CATEGORY_LABELS } from "@/types";
 import { fetchOverpassFacilities, reverseGeocode } from "@/lib/overpass";
 import { supabase } from "@/lib/supabase";
 import FacilityPanel from "./FacilityPanel";
@@ -10,14 +10,6 @@ import AddFacilityModal from "./AddFacilityModal";
 
 import type { Map as LeafletMap, Marker } from "leaflet";
 
-// カテゴリごとに地図上で表示するアルファベット
-const CATEGORY_LETTERS: Record<FacilityCategory, string> = {
-  construction: "C",
-  wedding: "W",
-  roadside_station: "R",
-  kindergarten: "K",
-  furniture: "F",
-};
 
 const DEBOUNCE_MS = 800;
 const ACTIVE_CATEGORIES = Object.keys(CATEGORY_COLORS) as FacilityCategory[];
@@ -25,24 +17,52 @@ const ACTIVE_CATEGORIES = Object.keys(CATEGORY_COLORS) as FacilityCategory[];
 function makePinIcon(
   L: typeof import("leaflet"),
   color: string,
-  letter: string
+  emoji: string
 ) {
   return L.divIcon({
-    html: `<svg viewBox="0 0 32 44" xmlns="http://www.w3.org/2000/svg" width="32" height="44">
-      <path d="M16 0C7.163 0 0 7.163 0 16c0 12 16 28 16 28S32 28 32 16C32 7.163 24.837 0 16 0z"
-            fill="${color}" stroke="white" stroke-width="2"/>
-      <text x="16" y="21" text-anchor="middle" dominant-baseline="middle"
-            font-family="Arial,sans-serif" font-size="13" font-weight="bold"
-            fill="white">${letter}</text>
-    </svg>`,
+    html: `<div style="
+      position:relative;
+      width:36px;
+      height:44px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+    ">
+      <div style="
+        width:36px;
+        height:36px;
+        border-radius:50% 50% 50% 0;
+        transform:rotate(-45deg);
+        background:${color};
+        border:2px solid white;
+        box-shadow:0 2px 6px rgba(0,0,0,0.3);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+      ">
+        <span style="transform:rotate(45deg);font-size:17px;line-height:1;">${emoji}</span>
+      </div>
+      <div style="
+        width:4px;height:8px;
+        background:${color};
+        border-radius:0 0 2px 2px;
+        margin-top:-1px;
+      "></div>
+    </div>`,
     className: "",
-    iconSize: [32, 44],
-    iconAnchor: [16, 44],
+    iconSize: [36, 44],
+    iconAnchor: [18, 44],
     popupAnchor: [0, -44],
   });
 }
 
-export default function MapView() {
+interface MapViewProps {
+  initialLat?: number;
+  initialLng?: number;
+  initialZoom?: number;
+}
+
+export default function MapView({ initialLat, initialLng, initialZoom }: MapViewProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const markersRef = useRef<Map<string, Marker>>(new Map());
@@ -88,24 +108,31 @@ export default function MapView() {
     if (markersRef.current.has(facility.id)) return;
 
     const color = CATEGORY_COLORS[facility.category];
-    const letter = CATEGORY_LETTERS[facility.category];
-    const icon = makePinIcon(L, color, letter);
+    const emoji = CATEGORY_EMOJI[facility.category];
+    const icon = makePinIcon(L, color, emoji);
     const marker = L.marker([facility.lat, facility.lng], { icon });
 
     async function onActivate() {
+      // 即パネルを開く（住所は後から差し込む）
+      setSelected(facility);
+
+      // Supabase の保存済みデータをマージ
       let f = facility;
-      // merge any saved edits from Supabase
       const { data } = await supabase
         .from("facilities")
         .select("*")
         .eq("id", facility.id)
         .single();
       if (data) f = { ...facility, ...data };
+
+      // 住所が無ければ逆ジオコーディング（バックグラウンド）
       if (!f.address) {
+        f = { ...f, address: "住所を取得中…" };
+        setSelected({ ...f });
         const address = await reverseGeocode(f.lat, f.lng);
         f = { ...f, address };
       }
-      setSelected(f);
+      setSelected({ ...f });
     }
 
     marker.on("click", onActivate);
@@ -172,7 +199,10 @@ export default function MapView() {
         shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
 
-      const map = L.map(mapContainerRef.current!).setView([34.6937, 135.5023], 13);
+      const centerLat = initialLat ?? 34.6937;
+      const centerLng = initialLng ?? 135.5023;
+      const zoom = initialZoom ?? 13;
+      const map = L.map(mapContainerRef.current!).setView([centerLat, centerLng], zoom);
       L.tileLayer(
         "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
         {
@@ -251,12 +281,8 @@ export default function MapView() {
               onChange={() => toggleCategory(cat)}
               className="hidden"
             />
-            {/* mini pin preview */}
-            <span
-              className="inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-[9px] font-bold flex-shrink-0"
-              style={{ backgroundColor: CATEGORY_COLORS[cat] }}
-            >
-              {CATEGORY_LETTERS[cat]}
+            <span className="text-base flex-shrink-0 leading-none">
+              {CATEGORY_EMOJI[cat]}
             </span>
             <span
               className={`text-xs ${

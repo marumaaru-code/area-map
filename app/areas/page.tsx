@@ -15,9 +15,10 @@ interface NominatimResult {
 export default function AreasPage() {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<NominatimResult[]>([]);
-  const [selectedArea, setSelectedArea] = useState<{ label: string; bbox: [number,number,number,number] } | null>(null);
+  const [selectedArea, setSelectedArea] = useState<{ label: string; bbox: [number, number, number, number] } | null>(null);
   const [scores, setScores] = useState<AreaScore[]>([]);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -39,12 +40,14 @@ export default function AreasPage() {
 
   function handleQueryChange(v: string) {
     setQuery(v);
+    setSelectedArea(null);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => searchNominatim(v), 400);
   }
 
   function selectSuggestion(s: NominatimResult) {
-    const [south, north, west, east] = s.boundingbox.map(Number) as [number,number,number,number];
+    // Nominatim boundingbox order: [south, north, west, east]
+    const [south, north, west, east] = s.boundingbox.map(Number);
     const label = s.display_name.split(",")[0];
     setSelectedArea({ label, bbox: [south, west, north, east] });
     setQuery(label);
@@ -57,6 +60,9 @@ export default function AreasPage() {
     setLoading(true);
     setError("");
     setScores([]);
+    setProgress(0);
+
+    const total = GRID_SIZE * GRID_SIZE;
     try {
       const [south, west, north, east] = selectedArea.bbox;
       const latStep = (north - south) / GRID_SIZE;
@@ -86,7 +92,8 @@ export default function AreasPage() {
             lat: (cs + cn) / 2,
             lng: (cw + ce) / 2,
           });
-          await new Promise((r) => setTimeout(r, 350));
+          setProgress(cells.length);
+          await new Promise((r) => setTimeout(r, 300));
         }
       }
       setScores(cells.sort((a, b) => b.score - a.score));
@@ -95,13 +102,21 @@ export default function AreasPage() {
       console.error(e);
     } finally {
       setLoading(false);
+      setProgress(0);
     }
+
+    void total;
   }
 
+  // マップページに lat/lng をクエリパラメータで渡してジャンプ
   function jumpToMap(score: AreaScore) {
-    if (score.lat && score.lng) {
-      window.open(`/map?lat=${score.lat}&lng=${score.lng}&zoom=14`, "_self");
-    }
+    if (score.lat == null || score.lng == null) return;
+    const params = new URLSearchParams({
+      lat: String(score.lat),
+      lng: String(score.lng),
+      zoom: "14",
+    });
+    window.location.href = `/map?${params.toString()}`;
   }
 
   return (
@@ -131,7 +146,7 @@ export default function AreasPage() {
             disabled={loading || !selectedArea}
             className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-medium px-4 py-2 rounded-lg whitespace-nowrap"
           >
-            {loading ? "分析中…" : "分析する"}
+            {loading ? `分析中… (${progress}/${GRID_SIZE * GRID_SIZE})` : "分析する"}
           </button>
         </div>
 
@@ -160,9 +175,18 @@ export default function AreasPage() {
       {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
 
       {loading && (
-        <p className="text-sm text-gray-500 mb-4 animate-pulse">
-          Overpass API からデータ取得中… ({GRID_SIZE * GRID_SIZE} セル)
-        </p>
+        <div className="mb-4">
+          <div className="flex justify-between text-xs text-gray-500 mb-1">
+            <span>データ取得中…</span>
+            <span>{progress} / {GRID_SIZE * GRID_SIZE} セル</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-1.5">
+            <div
+              className="bg-blue-500 h-1.5 rounded-full transition-all"
+              style={{ width: `${(progress / (GRID_SIZE * GRID_SIZE)) * 100}%` }}
+            />
+          </div>
+        </div>
       )}
 
       {scores.length > 0 && (
@@ -172,8 +196,8 @@ export default function AreasPage() {
               <tr className="bg-gray-100 text-left">
                 <th className="px-3 py-2 font-medium text-gray-600">順位</th>
                 <th className="px-3 py-2 font-medium text-gray-600">エリア</th>
-                <th className="px-3 py-2 font-medium text-gray-600 text-right">工務店数</th>
-                <th className="px-3 py-2 font-medium text-gray-600 text-right">関連施設数</th>
+                <th className="px-3 py-2 font-medium text-gray-600 text-right">🏗️ 工務店</th>
+                <th className="px-3 py-2 font-medium text-gray-600 text-right">関連施設</th>
                 <th className="px-3 py-2 font-medium text-gray-600 text-right">スコア</th>
                 <th className="px-3 py-2"></th>
               </tr>
@@ -189,7 +213,10 @@ export default function AreasPage() {
                     {s.score}
                   </td>
                   <td className="px-3 py-2">
-                    <button onClick={() => jumpToMap(s)} className="text-xs text-blue-600 hover:underline">
+                    <button
+                      onClick={() => jumpToMap(s)}
+                      className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+                    >
                       地図で見る →
                     </button>
                   </td>

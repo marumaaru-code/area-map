@@ -76,3 +76,11 @@ export const CATEGORY_COLORS: Record<FacilityCategory, string> = {
   kindergarten: "#eab308",
   furniture: "#3b82f6",
 };
+
+export const CATEGORY_EMOJI: Record<FacilityCategory, string> = {
+  construction: "🏗️",
+  wedding: "💒",
+  roadside_station: "🛣️",
+  kindergarten: "👶",
+  furniture: "🪑",
+};
