@@ -1,7 +1,12 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { fetchOverpassFacilities, AREA_SCORE_WEIGHTS } from "@/lib/overpass";
+import {
+  fetchOverpassFacilities,
+  searchPlaces,
+  AREA_SCORE_WEIGHTS,
+  type PlaceSearchResult,
+} from "@/lib/overpass";
 import type { AreaScore, FacilityCategory } from "@/types";
 
 const RELATED_CATEGORIES: FacilityCategory[] = [
@@ -12,11 +17,8 @@ const RELATED_CATEGORIES: FacilityCategory[] = [
 ];
 const GRID_SIZE = 3;
 
-interface NominatimResult {
-  display_name: string;
-  // [south, north, west, east]
-  boundingbox: [string, string, string, string];
-}
+// Nominatim search result (boundingbox: [south, north, west, east])
+type NominatimResult = PlaceSearchResult;
 
 interface SelectedArea {
   label: string;
@@ -36,20 +38,12 @@ export default function AreasPage() {
   const [error, setError] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Nominatim autocomplete
+  // Nominatim autocomplete (via /api/geocode proxy — throttled + cached server-side)
   async function searchNominatim(q: string) {
     if (!q.trim()) { setSuggestions([]); return; }
     setSearching(true);
     try {
-      const url =
-        `https://nominatim.openstreetmap.org/search` +
-        `?q=${encodeURIComponent(q + " 日本")}` +
-        `&format=json&limit=6&accept-language=ja&addressdetails=0`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": "instagram-area-tool/1.0" },
-      });
-      const data: NominatimResult[] = await res.json();
-      setSuggestions(data.filter((d) => d.boundingbox));
+      setSuggestions(await searchPlaces(q));
     } catch {
       setSuggestions([]);
     } finally {
@@ -145,12 +139,11 @@ export default function AreasPage() {
 
   function jumpToMap(score: AreaScore) {
     if (score.lat == null || score.lng == null) return;
-    const params = new URLSearchParams({
-      lat: String(score.lat),
-      lng: String(score.lng),
-      zoom: "14",
-    });
-    window.location.href = `/map?${params.toString()}`;
+    localStorage.setItem(
+      "mapJump",
+      JSON.stringify({ lat: score.lat, lng: score.lng, zoom: 14 })
+    );
+    window.location.href = "/map";
   }
 
   return (

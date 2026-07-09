@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { Facility, FacilityCategory } from "@/types";
 import { CATEGORY_LABELS } from "@/types";
-import { supabase } from "@/lib/supabase";
+import { insertFacility } from "@/lib/db";
 
 interface Props {
   defaultLat?: number;
@@ -50,13 +50,8 @@ export default function AddFacilityModal({ defaultLat, defaultLng, onClose, onAd
         instagram_url: form.instagram_url || undefined,
         concept_memo: form.concept_memo || undefined,
       };
-      const { error: dbError } = await supabase.from("facilities").insert({
-        ...facility,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      if (dbError) throw dbError;
-      onAdded(facility);
+      const saved = await insertFacility(facility);
+      onAdded(saved);
     } catch (e) {
       setError("保存に失敗しました。Supabaseの接続設定を確認してください。");
       console.error(e);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { supabase } from "@/lib/supabase";
+import { listPosts, insertPost } from "@/lib/db";
 import type { Post } from "@/types";
 
 interface Proposal {
@@ -28,16 +28,9 @@ export default function PostsPage() {
   const [aiError, setAiError] = useState("");
 
   useEffect(() => {
-    supabase
-      .from("posts")
-      .select("*")
-      .order("posted_at", { ascending: false })
-      .limit(20)
-      .then(({ data }) => {
-        if (data) setPosts(data as Post[]);
-      })
-      // eslint-disable-next-line @typescript-eslint/no-empty-function
-      .then(undefined, () => {});
+    listPosts()
+      .then((data) => setPosts(data))
+      .catch(() => {});
   }, []);
 
   function setField(field: string, value: string) {
@@ -59,9 +52,8 @@ export default function PostsPage() {
         comments: parseInt(form.comments) || 0,
         memo: form.memo || null,
       };
-      const { data, error } = await supabase.from("posts").insert(post).select().single();
-      if (error) throw error;
-      setPosts((prev) => [data as Post, ...prev]);
+      const created = await insertPost(post);
+      setPosts((prev) => [created, ...prev]);
       setForm({ theme: "", caption: "", format: "feed", likes: "", saves: "", comments: "", memo: "" });
     } catch (e) {
       console.error(e);

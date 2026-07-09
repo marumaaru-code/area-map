@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { supabase } from "@/lib/supabase";
+import { listFacilities, getProfile, saveProfile as saveProfileToDb } from "@/lib/db";
 import type { Facility, OwnAccountProfile } from "@/types";
 
 interface ScoredFacility extends Facility {
@@ -35,22 +35,12 @@ export default function SimilarPage() {
   useEffect(() => {
     async function load() {
       try {
-        const { data: fData, error: fErr } = await supabase
-          .from("facilities")
-          .select("*")
-          .eq("category", "construction");
-        if (fErr) throw fErr;
-        if (fData) {
-          setDbFacilities(fData as Facility[]);
-          setDbConnected(true);
-        }
-        const { data: pData } = await supabase
-          .from("own_account_profile")
-          .select("*")
-          .limit(1)
-          .single();
+        const fData = await listFacilities({ category: "construction" });
+        setDbFacilities(fData);
+        setDbConnected(true);
+        const pData = await getProfile();
         if (pData) {
-          setProfile(pData as OwnAccountProfile);
+          setProfile(pData);
           setProfileSaved(true);
         }
       } catch {
@@ -78,12 +68,7 @@ export default function SimilarPage() {
   async function saveProfile() {
     setSavingProfile(true);
     try {
-      const { error: e } = await supabase.from("own_account_profile").upsert({
-        id: 1,
-        ...profile,
-        updated_at: new Date().toISOString(),
-      });
-      if (e) throw e;
+      await saveProfileToDb(profile);
       setProfileSaved(true);
     } catch (err) {
       console.error(err);

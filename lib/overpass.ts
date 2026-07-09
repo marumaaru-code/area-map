@@ -1,14 +1,12 @@
 import type { FacilityCategory, OsmElement, Facility } from "@/types";
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
-
 // Scoring weights for area analysis — adjust here to tune rankings
 export const AREA_SCORE_WEIGHTS = {
   relatedFacilityWeight: 2,
   constructionPenaltyWeight: 3,
 };
 
-function buildQuery(bbox: [number, number, number, number]): string {
+export function buildQuery(bbox: [number, number, number, number]): string {
   const [south, west, north, east] = bbox;
   const b = `${south},${west},${north},${east}`;
   return `[out:json][timeout:25];
@@ -87,11 +85,12 @@ export function osmElementToFacility(el: OsmElement): Facility | null {
 export async function fetchOverpassFacilities(
   bbox: [number, number, number, number]
 ): Promise<Facility[]> {
-  const query = buildQuery(bbox);
-  const res = await fetch(OVERPASS_URL, {
+  // Goes through our server-side proxy (/api/overpass), which adds caching,
+  // retry/backoff and mirror rotation to avoid Overpass 429s.
+  const res = await fetch("/api/overpass", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: `data=${encodeURIComponent(query)}`,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bbox }),
   });
 
   if (!res.ok) throw new Error(`Overpass API error: ${res.status}`);
@@ -105,11 +104,23 @@ export async function fetchOverpassFacilities(
 }
 
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&accept-language=ja`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "instagram-area-tool/1.0" },
-  });
+  // Via /api/geocode — server sends a valid User-Agent and rate-limits to
+  // Nominatim's 1-req/sec policy so we don't get blocked.
+  const res = await fetch(`/api/geocode?reverse=${lat},${lng}`);
   if (!res.ok) return "";
   const json = await res.json();
   return json.display_name || "";
+}
+
+export interface PlaceSearchResult {
+  display_name: string;
+  boundingbox: [string, string, string, string];
+}
+
+export async function searchPlaces(query: string): Promise<PlaceSearchResult[]> {
+  // Nominatim place search via /api/geocode. The "日本" suffix keeps results in Japan.
+  const res = await fetch(`/api/geocode?q=${encodeURIComponent(query + " 日本")}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as PlaceSearchResult[];
+  return Array.isArray(data) ? data.filter((d) => d.boundingbox) : [];
 }

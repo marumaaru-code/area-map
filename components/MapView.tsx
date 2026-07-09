@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Facility, FacilityCategory } from "@/types";
 import { CATEGORY_COLORS, CATEGORY_EMOJI, CATEGORY_LABELS } from "@/types";
 import { fetchOverpassFacilities, reverseGeocode } from "@/lib/overpass";
-import { supabase } from "@/lib/supabase";
+import { listFacilities, getFacility } from "@/lib/db";
 import FacilityPanel from "./FacilityPanel";
 import AddFacilityModal from "./AddFacilityModal";
 
@@ -56,13 +56,7 @@ function makePinIcon(
   });
 }
 
-interface MapViewProps {
-  initialLat?: number;
-  initialLng?: number;
-  initialZoom?: number;
-}
-
-export default function MapView({ initialLat, initialLng, initialZoom }: MapViewProps) {
+export default function MapView() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const markersRef = useRef<Map<string, Marker>>(new Map());
@@ -87,15 +81,11 @@ export default function MapView({ initialLat, initialLng, initialZoom }: MapView
   useEffect(() => { activeCategoriesRef.current = activeCategories; }, [activeCategories]);
   useEffect(() => { manualFacilitiesRef.current = manualFacilities; }, [manualFacilities]);
 
-  // Load manual facilities from Supabase once
+  // Load manual facilities once (via /api/facilities)
   useEffect(() => {
-    supabase
-      .from("facilities")
-      .select("*")
-      .eq("source", "manual")
-      .then(({ data }) => {
-        if (data) setManualFacilities(data as Facility[]);
-      }, () => {});
+    listFacilities({ source: "manual" })
+      .then((data) => setManualFacilities(data))
+      .catch(() => {});
   }, []);
 
   // ── marker helpers ────────────────────────────────────────────────────────
@@ -116,14 +106,10 @@ export default function MapView({ initialLat, initialLng, initialZoom }: MapView
       // 即パネルを開く（住所は後から差し込む）
       setSelected(facility);
 
-      // Supabase の保存済みデータをマージ
+      // 保存済みデータをマージ（/api/facilities 経由）
       let f = facility;
-      const { data } = await supabase
-        .from("facilities")
-        .select("*")
-        .eq("id", facility.id)
-        .single();
-      if (data) f = { ...facility, ...data };
+      const saved = await getFacility(facility.id);
+      if (saved) f = { ...facility, ...saved };
 
       // 住所が無ければ逆ジオコーディング（バックグラウンド）
       if (!f.address) {
@@ -189,6 +175,12 @@ export default function MapView({ initialLat, initialLng, initialZoom }: MapView
   useEffect(() => {
     if (mapRef.current || !mapContainerRef.current) return;
 
+    // Leaflet CSS はブラウザ側でのみ読み込む（SSR/HMRループを防ぐ）
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(link);
+
     import("leaflet").then((L) => {
       leafletRef.current = L;
 
@@ -199,9 +191,20 @@ export default function MapView({ initialLat, initialLng, initialZoom }: MapView
         shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
 
-      const centerLat = initialLat ?? 34.6937;
-      const centerLng = initialLng ?? 135.5023;
-      const zoom = initialZoom ?? 13;
+      // エリアページからのジャンプ座標を localStorage から読む
+      let centerLat = 34.6937;
+      let centerLng = 135.5023;
+      let zoom = 13;
+      try {
+        const jump = localStorage.getItem("mapJump");
+        if (jump) {
+          const j = JSON.parse(jump) as { lat: number; lng: number; zoom: number };
+          centerLat = j.lat;
+          centerLng = j.lng;
+          zoom = j.zoom;
+          localStorage.removeItem("mapJump");
+        }
+      } catch { /* ignore */ }
       const map = L.map(mapContainerRef.current!).setView([centerLat, centerLng], zoom);
       L.tileLayer(
         "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",

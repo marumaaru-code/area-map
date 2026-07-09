@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { Facility } from "@/types";
 import { CATEGORY_LABELS } from "@/types";
-import { supabase } from "@/lib/supabase";
+import { upsertFacility } from "@/lib/db";
 
 interface Props {
   facility: Facility;
@@ -26,35 +26,21 @@ export default function FacilityPanel({ facility, onClose, onUpdated }: Props) {
     setSaving(true);
     setMessage("");
     try {
-      if (facility.source === "osm") {
-        // Upsert into Supabase for OSM facilities (merge manual edits)
-        const { error } = await supabase.from("facilities").upsert({
-          id: facility.id,
-          source: facility.source,
-          category: facility.category,
-          name: facility.name,
-          name_ja: facility.name_ja,
-          lat: facility.lat,
-          lng: facility.lng,
-          address: facility.address,
-          website: website || null,
-          instagram_url: instagramUrl || null,
-          concept_memo: memo || null,
-          updated_at: new Date().toISOString(),
-        });
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("facilities")
-          .update({
-            website: website || null,
-            instagram_url: instagramUrl || null,
-            concept_memo: memo || null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", facility.id);
-        if (error) throw error;
-      }
+      // Upsert via /api/facilities. Sending the full row means this works whether
+      // the facility already exists (manual) or not yet (OSM, first edit).
+      await upsertFacility({
+        id: facility.id,
+        source: facility.source,
+        category: facility.category,
+        name: facility.name,
+        name_ja: facility.name_ja ?? null,
+        lat: facility.lat,
+        lng: facility.lng,
+        address: facility.address ?? null,
+        website: website || null,
+        instagram_url: instagramUrl || null,
+        concept_memo: memo || null,
+      });
       onUpdated({
         ...facility,
         website: website || undefined,
