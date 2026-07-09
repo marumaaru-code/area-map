@@ -4,31 +4,50 @@ import { useState, useRef } from "react";
 import { fetchOverpassFacilities, AREA_SCORE_WEIGHTS } from "@/lib/overpass";
 import type { AreaScore, FacilityCategory } from "@/types";
 
-const RELATED_CATEGORIES: FacilityCategory[] = ["wedding", "roadside_station", "kindergarten", "furniture"];
+const RELATED_CATEGORIES: FacilityCategory[] = [
+  "wedding",
+  "roadside_station",
+  "kindergarten",
+  "furniture",
+];
 const GRID_SIZE = 3;
 
 interface NominatimResult {
   display_name: string;
-  boundingbox: [string, string, string, string]; // [south, north, west, east]
+  // [south, north, west, east]
+  boundingbox: [string, string, string, string];
+}
+
+interface SelectedArea {
+  label: string;
+  south: number;
+  west: number;
+  north: number;
+  east: number;
 }
 
 export default function AreasPage() {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<NominatimResult[]>([]);
-  const [selectedArea, setSelectedArea] = useState<{ label: string; bbox: [number, number, number, number] } | null>(null);
+  const [selectedArea, setSelectedArea] = useState<SelectedArea | null>(null);
   const [scores, setScores] = useState<AreaScore[]>([]);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Nominatim autocomplete
   async function searchNominatim(q: string) {
     if (!q.trim()) { setSuggestions([]); return; }
     setSearching(true);
     try {
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q + " 日本")}&format=json&limit=6&accept-language=ja&addressdetails=0`;
-      const res = await fetch(url, { headers: { "User-Agent": "instagram-area-tool/1.0" } });
+      const url =
+        `https://nominatim.openstreetmap.org/search` +
+        `?q=${encodeURIComponent(q + " 日本")}` +
+        `&format=json&limit=6&accept-language=ja&addressdetails=0`;
+      const res = await fetch(url, {
+        headers: { "User-Agent": "instagram-area-tool/1.0" },
+      });
       const data: NominatimResult[] = await res.json();
       setSuggestions(data.filter((d) => d.boundingbox));
     } catch {
@@ -46,25 +65,36 @@ export default function AreasPage() {
   }
 
   function selectSuggestion(s: NominatimResult) {
-    // Nominatim boundingbox order: [south, north, west, east]
+    // Nominatim boundingbox: [south, north, west, east]
     const [south, north, west, east] = s.boundingbox.map(Number);
-    const label = s.display_name.split(",")[0];
-    setSelectedArea({ label, bbox: [south, west, north, east] });
-    setQuery(label);
+    setSelectedArea({
+      label: s.display_name.split(",")[0],
+      south,
+      west,
+      north,
+      east,
+    });
+    setQuery(s.display_name.split(",")[0]);
     setSuggestions([]);
     setScores([]);
   }
 
   async function analyze() {
-    if (!selectedArea) { setError("先に市区町村を選択してください"); return; }
+    if (!selectedArea) {
+      setError("先に市区町村を選択してください");
+      return;
+    }
     setLoading(true);
     setError("");
     setScores([]);
-    setProgress(0);
 
-    const total = GRID_SIZE * GRID_SIZE;
     try {
-      const [south, west, north, east] = selectedArea.bbox;
+      const { south, west, north, east, label } = selectedArea;
+
+      // Overpass に 1 回だけリクエスト（9 回に分けてレート制限に引っかかるのを防ぐ）
+      const facilities = await fetchOverpassFacilities([south, west, north, east]);
+
+      // グリッド分類（クライアント側で座標を見て振り分け）
       const latStep = (north - south) / GRID_SIZE;
       const lngStep = (east - west) / GRID_SIZE;
 
@@ -76,15 +106,21 @@ export default function AreasPage() {
           const cw = west + col * lngStep;
           const ce = cw + lngStep;
 
-          const facilities = await fetchOverpassFacilities([cs, cw, cn, ce]);
-          const constructionCount = facilities.filter((f) => f.category === "construction").length;
-          const relatedCount = facilities.filter((f) => RELATED_CATEGORIES.includes(f.category)).length;
+          const inCell = facilities.filter(
+            (f) => f.lat >= cs && f.lat < cn && f.lng >= cw && f.lng < ce
+          );
+          const constructionCount = inCell.filter(
+            (f) => f.category === "construction"
+          ).length;
+          const relatedCount = inCell.filter((f) =>
+            RELATED_CATEGORIES.includes(f.category)
+          ).length;
           const score =
             relatedCount * AREA_SCORE_WEIGHTS.relatedFacilityWeight -
             constructionCount * AREA_SCORE_WEIGHTS.constructionPenaltyWeight;
 
           cells.push({
-            area_name: `${selectedArea.label} エリア${row * GRID_SIZE + col + 1}`,
+            area_name: `${label} エリア${row * GRID_SIZE + col + 1}`,
             construction_count: constructionCount,
             related_facility_count: relatedCount,
             score,
@@ -92,23 +128,21 @@ export default function AreasPage() {
             lat: (cs + cn) / 2,
             lng: (cw + ce) / 2,
           });
-          setProgress(cells.length);
-          await new Promise((r) => setTimeout(r, 300));
         }
       }
+
       setScores(cells.sort((a, b) => b.score - a.score));
     } catch (e) {
-      setError("取得に失敗しました。しばらく待ってから再試行してください。");
       console.error(e);
+      setError(
+        "データ取得に失敗しました。しばらく待ってから再試行してください。" +
+        "（Overpass APIの一時的な混雑が原因の場合があります）"
+      );
     } finally {
       setLoading(false);
-      setProgress(0);
     }
-
-    void total;
   }
 
-  // マップページに lat/lng をクエリパラメータで渡してジャンプ
   function jumpToMap(score: AreaScore) {
     if (score.lat == null || score.lng == null) return;
     const params = new URLSearchParams({
@@ -123,10 +157,13 @@ export default function AreasPage() {
     <div className="max-w-3xl mx-auto px-4 py-6">
       <h1 className="text-xl font-bold text-gray-800 mb-1">狙い目エリア一覧</h1>
       <p className="text-sm text-gray-500 mb-6">
-        市区町村名で検索 → グリッド分割してスコアリングします。<br />
-        スコア = 関連施設数×{AREA_SCORE_WEIGHTS.relatedFacilityWeight} − 工務店数×{AREA_SCORE_WEIGHTS.constructionPenaltyWeight}
+        市区町村名で検索 → グリッド分割してスコアリングします。
+        <br />
+        スコア = 関連施設数×{AREA_SCORE_WEIGHTS.relatedFacilityWeight} − 工務店数×
+        {AREA_SCORE_WEIGHTS.constructionPenaltyWeight}
       </p>
 
+      {/* 検索ボックス */}
       <div className="relative mb-4">
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -138,7 +175,9 @@ export default function AreasPage() {
               className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
             {searching && (
-              <span className="absolute right-2 top-2.5 text-xs text-gray-400">検索中…</span>
+              <span className="absolute right-2 top-2.5 text-xs text-gray-400">
+                検索中…
+              </span>
             )}
           </div>
           <button
@@ -146,10 +185,11 @@ export default function AreasPage() {
             disabled={loading || !selectedArea}
             className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-medium px-4 py-2 rounded-lg whitespace-nowrap"
           >
-            {loading ? `分析中… (${progress}/${GRID_SIZE * GRID_SIZE})` : "分析する"}
+            {loading ? "取得中…" : "分析する"}
           </button>
         </div>
 
+        {/* サジェスト */}
         {suggestions.length > 0 && (
           <ul className="absolute top-full left-0 right-0 z-50 bg-white border rounded-lg shadow-lg mt-1 divide-y max-h-56 overflow-y-auto">
             {suggestions.map((s, i) => (
@@ -166,65 +206,74 @@ export default function AreasPage() {
         )}
       </div>
 
-      {selectedArea && (
+      {selectedArea && !loading && scores.length === 0 && (
         <p className="text-xs text-blue-700 bg-blue-50 rounded px-3 py-1.5 mb-4">
-          選択中：<strong>{selectedArea.label}</strong>　を {GRID_SIZE}×{GRID_SIZE} グリッドで分析します
+          選択中：<strong>{selectedArea.label}</strong> を {GRID_SIZE}×{GRID_SIZE} グリッドで分析します
         </p>
       )}
 
-      {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
+      {error && (
+        <p className="text-red-500 text-sm mb-4 bg-red-50 border border-red-200 rounded px-3 py-2">
+          {error}
+        </p>
+      )}
 
       {loading && (
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>データ取得中…</span>
-            <span>{progress} / {GRID_SIZE * GRID_SIZE} セル</span>
-          </div>
-          <div className="w-full bg-gray-200 rounded-full h-1.5">
-            <div
-              className="bg-blue-500 h-1.5 rounded-full transition-all"
-              style={{ width: `${(progress / (GRID_SIZE * GRID_SIZE)) * 100}%` }}
-            />
-          </div>
+        <div className="flex items-center gap-3 text-sm text-gray-500 mb-4">
+          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          Overpass API からデータ取得中…（1回のリクエストで完了します）
         </div>
       )}
 
       {scores.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="bg-gray-100 text-left">
-                <th className="px-3 py-2 font-medium text-gray-600">順位</th>
-                <th className="px-3 py-2 font-medium text-gray-600">エリア</th>
-                <th className="px-3 py-2 font-medium text-gray-600 text-right">🏗️ 工務店</th>
-                <th className="px-3 py-2 font-medium text-gray-600 text-right">関連施設</th>
-                <th className="px-3 py-2 font-medium text-gray-600 text-right">スコア</th>
-                <th className="px-3 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {scores.map((s, i) => (
-                <tr key={s.area_name} className="border-t hover:bg-gray-50">
-                  <td className="px-3 py-2 text-gray-400">{i + 1}</td>
-                  <td className="px-3 py-2 font-medium">{s.area_name}</td>
-                  <td className="px-3 py-2 text-right text-red-600">{s.construction_count}</td>
-                  <td className="px-3 py-2 text-right text-blue-600">{s.related_facility_count}</td>
-                  <td className={`px-3 py-2 text-right font-bold ${s.score >= 0 ? "text-green-600" : "text-gray-400"}`}>
-                    {s.score}
-                  </td>
-                  <td className="px-3 py-2">
-                    <button
-                      onClick={() => jumpToMap(s)}
-                      className="text-xs text-blue-600 hover:underline whitespace-nowrap"
-                    >
-                      地図で見る →
-                    </button>
-                  </td>
+        <>
+          <p className="text-xs text-gray-400 mb-2">
+            {selectedArea?.label} — 合計 {scores.reduce((s, c) => s + c.construction_count + c.related_facility_count, 0)} 件の施設を取得
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-gray-100 text-left">
+                  <th className="px-3 py-2 font-medium text-gray-600">順位</th>
+                  <th className="px-3 py-2 font-medium text-gray-600">エリア</th>
+                  <th className="px-3 py-2 font-medium text-gray-600 text-right">🏗️ 工務店</th>
+                  <th className="px-3 py-2 font-medium text-gray-600 text-right">関連施設</th>
+                  <th className="px-3 py-2 font-medium text-gray-600 text-right">スコア</th>
+                  <th className="px-3 py-2" />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {scores.map((s, i) => (
+                  <tr key={s.area_name} className="border-t hover:bg-gray-50">
+                    <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                    <td className="px-3 py-2 font-medium">{s.area_name}</td>
+                    <td className="px-3 py-2 text-right text-red-600">
+                      {s.construction_count}
+                    </td>
+                    <td className="px-3 py-2 text-right text-blue-600">
+                      {s.related_facility_count}
+                    </td>
+                    <td
+                      className={`px-3 py-2 text-right font-bold ${
+                        s.score >= 0 ? "text-green-600" : "text-gray-400"
+                      }`}
+                    >
+                      {s.score}
+                    </td>
+                    <td className="px-3 py-2">
+                      <button
+                        onClick={() => jumpToMap(s)}
+                        className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+                      >
+                        地図で見る →
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
