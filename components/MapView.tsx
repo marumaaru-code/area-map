@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Facility, FacilityCategory } from "@/types";
 import { CATEGORY_COLORS, CATEGORY_LABELS } from "@/types";
 import { fetchOverpassFacilities, reverseGeocode } from "@/lib/overpass";
@@ -8,41 +8,66 @@ import { supabase } from "@/lib/supabase";
 import FacilityPanel from "./FacilityPanel";
 import AddFacilityModal from "./AddFacilityModal";
 
-// Leaflet is browser-only; loaded dynamically
-let L: typeof import("leaflet");
+import type { Map as LeafletMap, Marker } from "leaflet";
 
-function makePinIcon(color: string) {
-  return L.divIcon({
-    html: `<svg viewBox="0 0 24 36" xmlns="http://www.w3.org/2000/svg" width="24" height="36">
-      <path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 24 12 24s12-15 12-24C24 5.373 18.627 0 12 0z" fill="${color}" stroke="white" stroke-width="1.5"/>
-      <circle cx="12" cy="12" r="5" fill="white"/>
-    </svg>`,
-    className: "",
-    iconSize: [24, 36],
-    iconAnchor: [12, 36],
-    popupAnchor: [0, -36],
-  });
-}
+// カテゴリごとに地図上で表示するアルファベット
+const CATEGORY_LETTERS: Record<FacilityCategory, string> = {
+  construction: "C",
+  wedding: "W",
+  roadside_station: "R",
+  kindergarten: "K",
+  furniture: "F",
+};
 
 const DEBOUNCE_MS = 800;
 const ACTIVE_CATEGORIES = Object.keys(CATEGORY_COLORS) as FacilityCategory[];
 
+function makePinIcon(
+  L: typeof import("leaflet"),
+  color: string,
+  letter: string
+) {
+  return L.divIcon({
+    html: `<svg viewBox="0 0 32 44" xmlns="http://www.w3.org/2000/svg" width="32" height="44">
+      <path d="M16 0C7.163 0 0 7.163 0 16c0 12 16 28 16 28S32 28 32 16C32 7.163 24.837 0 16 0z"
+            fill="${color}" stroke="white" stroke-width="2"/>
+      <text x="16" y="21" text-anchor="middle" dominant-baseline="middle"
+            font-family="Arial,sans-serif" font-size="13" font-weight="bold"
+            fill="white">${letter}</text>
+    </svg>`,
+    className: "",
+    iconSize: [32, 44],
+    iconAnchor: [16, 44],
+    popupAnchor: [0, -44],
+  });
+}
+
 export default function MapView() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<import("leaflet").Map | null>(null);
-  const markersRef = useRef<Map<string, import("leaflet").Marker>>(new Map());
+  const mapRef = useRef<LeafletMap | null>(null);
+  const markersRef = useRef<Map<string, Marker>>(new Map());
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const osmFacilitiesRef = useRef<Map<string, Facility>>(new Map());
 
-  const [selected, setSelected] = useState<Facility | null>(null);
-  const [showAddModal, setShowAddModal] = useState(false);
+  // refs for values accessed inside map event callbacks (avoids stale closure)
+  const activeCategoriesRef = useRef<Set<FacilityCategory>>(new Set(ACTIVE_CATEGORIES));
+  const manualFacilitiesRef = useRef<Facility[]>([]);
+  const allOsmRef = useRef<Map<string, Facility>>(new Map());
+  const leafletRef = useRef<typeof import("leaflet") | null>(null);
+
+  // React state (for re-rendering UI only)
   const [activeCategories, setActiveCategories] = useState<Set<FacilityCategory>>(
     new Set(ACTIVE_CATEGORIES)
   );
-  const [loading, setLoading] = useState(false);
   const [manualFacilities, setManualFacilities] = useState<Facility[]>([]);
+  const [selected, setSelected] = useState<Facility | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  // Load manual facilities from Supabase
+  // keep refs in sync with state
+  useEffect(() => { activeCategoriesRef.current = activeCategories; }, [activeCategories]);
+  useEffect(() => { manualFacilitiesRef.current = manualFacilities; }, [manualFacilities]);
+
+  // Load manual facilities from Supabase once
   useEffect(() => {
     supabase
       .from("facilities")
@@ -53,91 +78,93 @@ export default function MapView() {
       }, () => {});
   }, []);
 
-  const addOrUpdateMarker = useCallback(
-    (facility: Facility, map: import("leaflet").Map) => {
-      if (!activeCategories.has(facility.category)) return;
-      const existing = markersRef.current.get(facility.id);
-      if (existing) return;
+  // ── marker helpers ────────────────────────────────────────────────────────
 
-      const color = CATEGORY_COLORS[facility.category];
-      const icon = makePinIcon(color);
-      const marker = L.marker([facility.lat, facility.lng], { icon });
+  function addMarker(facility: Facility) {
+    const L = leafletRef.current;
+    const map = mapRef.current;
+    if (!L || !map) return;
+    if (!activeCategoriesRef.current.has(facility.category)) return;
+    if (markersRef.current.has(facility.id)) return;
 
-      async function onPinActivate() {
-        let f = facility;
-        const { data } = await supabase
-          .from("facilities")
-          .select("*")
-          .eq("id", facility.id)
-          .single();
-        if (data) f = { ...facility, ...data };
-        if (!f.address) {
-          const address = await reverseGeocode(f.lat, f.lng);
-          f = { ...f, address };
-        }
-        setSelected(f);
+    const color = CATEGORY_COLORS[facility.category];
+    const letter = CATEGORY_LETTERS[facility.category];
+    const icon = makePinIcon(L, color, letter);
+    const marker = L.marker([facility.lat, facility.lng], { icon });
+
+    async function onActivate() {
+      let f = facility;
+      // merge any saved edits from Supabase
+      const { data } = await supabase
+        .from("facilities")
+        .select("*")
+        .eq("id", facility.id)
+        .single();
+      if (data) f = { ...facility, ...data };
+      if (!f.address) {
+        const address = await reverseGeocode(f.lat, f.lng);
+        f = { ...f, address };
       }
+      setSelected(f);
+    }
 
-      // click (PC) と touchend (スマホ・タブレット) 両方を捕捉
-      marker.on("click", onPinActivate);
-      marker.on("touchend", (e) => {
-        // touchend はデフォルトイベントを止めないと click と二重発火する
-        if ((e as unknown as { originalEvent: TouchEvent }).originalEvent) {
-          (e as unknown as { originalEvent: TouchEvent }).originalEvent.preventDefault();
-        }
-        onPinActivate();
-      });
+    marker.on("click", onActivate);
+    marker.on("touchend", (e) => {
+      (e as unknown as { originalEvent?: TouchEvent }).originalEvent?.preventDefault();
+      onActivate();
+    });
 
-      marker.addTo(map);
-      markersRef.current.set(facility.id, marker);
-    },
-    [activeCategories]
-  );
+    marker.addTo(map);
+    markersRef.current.set(facility.id, marker);
+  }
 
-  const clearMarkers = useCallback(() => {
+  function clearAllMarkers() {
     markersRef.current.forEach((m) => m.remove());
     markersRef.current.clear();
-  }, []);
+  }
 
-  const fetchAndRender = useCallback(
-    async (map: import("leaflet").Map) => {
-      const bounds = map.getBounds();
-      const bbox: [number, number, number, number] = [
-        bounds.getSouth(),
-        bounds.getWest(),
-        bounds.getNorth(),
-        bounds.getEast(),
-      ];
+  function redrawMarkers() {
+    clearAllMarkers();
+    allOsmRef.current.forEach((f) => addMarker(f));
+    manualFacilitiesRef.current.forEach((f) => addMarker(f));
+  }
 
-      // Guard against too-wide bbox to avoid heavy Overpass load
-      const latSpan = bbox[2] - bbox[0];
-      const lngSpan = bbox[3] - bbox[1];
-      if (latSpan > 1 || lngSpan > 1) return;
+  // ── fetch from Overpass for current viewport ──────────────────────────────
 
-      setLoading(true);
-      try {
-        const facilities = await fetchOverpassFacilities(bbox);
-        facilities.forEach((f) => {
-          osmFacilitiesRef.current.set(f.id, f);
-          addOrUpdateMarker(f, map);
-        });
-        // Also render manual facilities in view
-        manualFacilities.forEach((f) => addOrUpdateMarker(f, map));
-      } catch (e) {
-        console.error("Overpass fetch failed", e);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [addOrUpdateMarker, manualFacilities]
-  );
+  async function fetchAndRender() {
+    const map = mapRef.current;
+    if (!map) return;
+    const bounds = map.getBounds();
+    const south = bounds.getSouth();
+    const west = bounds.getWest();
+    const north = bounds.getNorth();
+    const east = bounds.getEast();
 
-  // Initialize map
+    if (north - south > 1 || east - west > 1) return; // too wide
+
+    setLoading(true);
+    try {
+      const facilities = await fetchOverpassFacilities([south, west, north, east]);
+      facilities.forEach((f) => {
+        allOsmRef.current.set(f.id, f);
+        addMarker(f);
+      });
+      manualFacilitiesRef.current.forEach((f) => addMarker(f));
+    } catch (e) {
+      console.error("Overpass fetch failed", e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── initialize map once ───────────────────────────────────────────────────
+
   useEffect(() => {
     if (mapRef.current || !mapContainerRef.current) return;
-    import("leaflet").then((leaflet) => {
-      L = leaflet;
-      // Fix default marker icons (Next.js asset path issue)
+
+    import("leaflet").then((L) => {
+      leafletRef.current = L;
+
       delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
       L.Icon.Default.mergeOptions({
         iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -146,80 +173,96 @@ export default function MapView() {
       });
 
       const map = L.map(mapContainerRef.current!).setView([34.6937, 135.5023], 13);
-      // Carto Voyager: Google Maps ライクなポップなデザイン
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
-        subdomains: "abcd",
-        maxZoom: 20,
-      }).addTo(map);
+      L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+        {
+          attribution:
+            '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
+          subdomains: "abcd",
+          maxZoom: 20,
+        }
+      ).addTo(map);
 
       mapRef.current = map;
 
       map.on("moveend", () => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => fetchAndRender(map), DEBOUNCE_MS);
+        debounceRef.current = setTimeout(fetchAndRender, DEBOUNCE_MS);
       });
 
-      fetchAndRender(map);
+      fetchAndRender();
     });
 
     return () => {
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
-      }
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markersRef.current.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-render markers when activeCategories changes
+  // ── redraw when categories or manual facilities change ────────────────────
+  // Use a ref-flag to skip the very first render (map not ready yet)
+  const mountedRef = useRef(false);
   useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
     if (!mapRef.current) return;
-    clearMarkers();
-    osmFacilitiesRef.current.forEach((f) => addOrUpdateMarker(f, mapRef.current!));
-    manualFacilities.forEach((f) => addOrUpdateMarker(f, mapRef.current!));
-  }, [activeCategories, addOrUpdateMarker, clearMarkers, manualFacilities]);
+    redrawMarkers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCategories, manualFacilities]);
+
+  // ── UI handlers ───────────────────────────────────────────────────────────
 
   function toggleCategory(cat: FacilityCategory) {
     setActiveCategories((prev) => {
       const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat);
-      else next.add(cat);
+      next.has(cat) ? next.delete(cat) : next.add(cat);
       return next;
     });
   }
 
   function handleFacilityUpdated(updated: Facility) {
     setSelected(updated);
-    osmFacilitiesRef.current.set(updated.id, updated);
+    allOsmRef.current.set(updated.id, updated);
   }
 
   function handleFacilityAdded(facility: Facility) {
     setManualFacilities((prev) => [...prev, facility]);
     setShowAddModal(false);
-    if (mapRef.current) addOrUpdateMarker(facility, mapRef.current);
   }
+
+  // ── render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="relative w-full h-full">
-      {/* Map (full bleed) */}
       <div ref={mapContainerRef} className="w-full h-full" />
 
       {/* Category filter */}
       <div className="absolute top-3 left-3 z-[1000] bg-white rounded-lg shadow p-2 space-y-1">
         {ACTIVE_CATEGORIES.map((cat) => (
-          <label key={cat} className="flex items-center gap-1.5 cursor-pointer text-xs select-none">
-            <span
-              className="w-3 h-3 rounded-full inline-block flex-shrink-0"
-              style={{ backgroundColor: CATEGORY_COLORS[cat] }}
-            />
+          <label
+            key={cat}
+            className="flex items-center gap-2 cursor-pointer select-none"
+          >
             <input
               type="checkbox"
               checked={activeCategories.has(cat)}
               onChange={() => toggleCategory(cat)}
               className="hidden"
             />
-            <span className={activeCategories.has(cat) ? "text-gray-800" : "text-gray-400"}>
+            {/* mini pin preview */}
+            <span
+              className="inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-[9px] font-bold flex-shrink-0"
+              style={{ backgroundColor: CATEGORY_COLORS[cat] }}
+            >
+              {CATEGORY_LETTERS[cat]}
+            </span>
+            <span
+              className={`text-xs ${
+                activeCategories.has(cat) ? "text-gray-800" : "text-gray-400"
+              }`}
+            >
               {CATEGORY_LABELS[cat]}
             </span>
           </label>
@@ -234,17 +277,16 @@ export default function MapView() {
         ＋ 施設を手動追加
       </button>
 
-      {/* Loading indicator */}
+      {/* Loading */}
       {loading && (
         <div className="absolute top-3 right-3 z-[1000] bg-white rounded-full shadow px-3 py-1 text-xs text-gray-500">
           読み込み中…
         </div>
       )}
 
-      {/* Detail panel — slides up from bottom on mobile, right-side panel on desktop */}
+      {/* Detail panel */}
       {selected && (
         <>
-          {/* Backdrop (mobile) */}
           <div
             className="fixed inset-0 z-[2000] bg-black/20 md:hidden"
             onClick={() => setSelected(null)}
@@ -253,8 +295,7 @@ export default function MapView() {
             fixed z-[2001]
             bottom-0 left-0 right-0 h-[70vh]
             md:absolute md:top-0 md:right-0 md:bottom-0 md:left-auto md:h-full md:w-80
-            bg-white shadow-2xl overflow-hidden
-            rounded-t-2xl md:rounded-none
+            bg-white shadow-2xl overflow-hidden rounded-t-2xl md:rounded-none
           ">
             <FacilityPanel
               facility={selected}
