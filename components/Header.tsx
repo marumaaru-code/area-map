@@ -6,8 +6,7 @@ import { usePathname } from "next/navigation";
 const navItems = [
   { href: "/map", label: "エリアマップ" },
   { href: "/areas", label: "狙い目エリア" },
-  { href: "/posts", label: "投稿企画" },
-  { href: "/similar", label: "類似アカウント" },
+  { href: "/follow", label: "フォロー選定" },
 ];
 
 export default function Header() {
