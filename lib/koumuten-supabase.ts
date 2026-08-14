@@ -43,5 +43,6 @@ export interface Comment {
   author: string;
   body: string;
   likes: number | null;
+  rating: string | null; // バック率: 良 / 普通 / 悪
   created_at: string;
 }

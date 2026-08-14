@@ -40,6 +40,8 @@ const ATMOSPHERE_TAGS = ["ナチュラル", "モダン", "シック", "北欧風
 const PRODUCT_TAGS = ["平屋", "リフォーム", "リノベーション", "規格住宅", "分譲住宅", "省エネ住宅", "エコ"];
 const TARGET_TAGS = ["子育て", "ペット", "家事ラク系", "狭小地"];
 const APPROACH_METHODS = ["フォロー", "いいね", "DM", "コメント", "その他"];
+const RATINGS = ["良", "普通", "悪"];
+const RATING_STYLE: Record<string, string> = { 良: "bg-green-100 text-green-700", 普通: "bg-gray-200 text-gray-600", 悪: "bg-red-100 text-red-700" };
 
 const FOLLOWER_RANGES = [
   { key: "lt2k", label: "2,000人未満", min: 0, max: 1999 },
@@ -88,11 +90,14 @@ export default function FollowPage() {
 
   const [selected, setSelected] = useState<Account | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+  const [sortKey, setSortKey] = useState(""); // "" | foll_desc | foll_asc | name
 
   useEffect(() => {
     try { setUsername(localStorage.getItem(NAME_KEY) || ""); } catch {}
     loadTeam();
     loadRecent();
+    loadStats();
   }, []);
 
   function saveUsername(v: string) { setUsername(v); try { localStorage.setItem(NAME_KEY, v); } catch {} }
@@ -116,6 +121,24 @@ export default function FollowPage() {
     const { data } = await supabase.from("follow_comments").select("*").order("created_at", { ascending: false }).limit(20);
     if (data) setRecent(data as Comment[]);
   }, []);
+
+  // アカウント横断のコメント集計（並べ替え「コメント多い順」「バック率高い順」用）
+  const [stats, setStats] = useState<Record<string, { count: number; rateScore: number }>>({});
+  const loadStats = useCallback(async () => {
+    const { data } = await supabase.from("follow_comments").select("account_key, rating");
+    if (!data) return;
+    const RV: Record<string, number> = { 良: 3, 普通: 2, 悪: 1 };
+    const acc: Record<string, { count: number; sum: number; rated: number }> = {};
+    for (const c of data as { account_key: string; rating: string | null }[]) {
+      const a = acc[c.account_key] || (acc[c.account_key] = { count: 0, sum: 0, rated: 0 });
+      a.count++;
+      if (c.rating && RV[c.rating]) { a.sum += RV[c.rating]; a.rated++; }
+    }
+    const out: Record<string, { count: number; rateScore: number }> = {};
+    for (const [k, a] of Object.entries(acc)) out[k] = { count: a.count, rateScore: a.rated ? a.sum / a.rated : -1 };
+    setStats(out);
+  }, []);
+  const refreshShared = useCallback(() => { loadRecent(); loadStats(); }, [loadRecent, loadStats]);
 
   const allAccounts = useMemo(() => [...DATA, ...teamAccounts], [teamAccounts]);
 
@@ -167,9 +190,17 @@ export default function FollowPage() {
       const score = (mA.length + mP.length + mT.length) * W;
       return { k, score, maxScore, matched: [...mA, ...mP, ...mT] };
     });
-    scored.sort((a, b) => (hasTagFilter && b.score !== a.score) ? b.score - a.score : (b.k.followers || 0) - (a.k.followers || 0));
+    const st = (k: Account) => stats[keyOf(k)] || { count: 0, rateScore: -1 };
+    scored.sort((a, b) => {
+      if (sortKey === "foll_desc") return (b.k.followers || 0) - (a.k.followers || 0);
+      if (sortKey === "foll_asc") return (a.k.followers || 0) - (b.k.followers || 0);
+      if (sortKey === "name") return (a.k.name || "").localeCompare(b.k.name || "", "ja");
+      if (sortKey === "rating") { const d = st(b.k).rateScore - st(a.k).rateScore; return d !== 0 ? d : (b.k.followers || 0) - (a.k.followers || 0); }
+      if (sortKey === "comments") { const d = st(b.k).count - st(a.k).count; return d !== 0 ? d : (b.k.followers || 0) - (a.k.followers || 0); }
+      return (hasTagFilter && b.score !== a.score) ? b.score - a.score : (b.k.followers || 0) - (a.k.followers || 0);
+    });
     return hasTagFilter ? scored.filter((s) => s.score > 0) : scored;
-  }, [allAccounts, category, source, followerRange, region, pref, city, keyword, atmosphere, product, target, hasTagFilter]);
+  }, [allAccounts, category, source, followerRange, region, pref, city, keyword, atmosphere, product, target, hasTagFilter, sortKey, stats]);
 
   const hasFilter = !!(category || source || followerRange || region || pref || city || keyword.trim() || hasTagFilter);
   function resetAll() {
@@ -215,8 +246,9 @@ export default function FollowPage() {
               {recent.map((c) => (
                 <li key={c.id} className="text-xs border-b last:border-0 pb-2">
                   <button onClick={() => openByKey(c.account_key, c.account_name)} className="font-medium text-blue-600 hover:underline">{c.account_name || c.account_key}</button>
+                  {c.rating && <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-bold ${RATING_STYLE[c.rating] || "bg-gray-100 text-gray-600"}`}>{c.rating}</span>}
                   <span className="text-gray-400 ml-2">{c.author}・{relTime(c.created_at)}</span>
-                  <p className="text-gray-700 mt-0.5 whitespace-pre-wrap">{c.body}</p>
+                  {c.body && <p className="text-gray-700 mt-0.5 whitespace-pre-wrap">{c.body}</p>}
                 </li>
               ))}
             </ul>
@@ -261,31 +293,57 @@ export default function FollowPage() {
             className="mt-2 w-full border rounded-lg px-3 py-2 text-base sm:text-sm" />
         </div>
 
-        <TagGroup label="雰囲気・テイスト" hint="※工務店データのみ" tags={ATMOSPHERE_TAGS} selected={atmosphere} onToggle={(t) => setAtmosphere((p) => toggle(p, t))} color="emerald" />
-        <TagGroup label="商品・工法" tags={PRODUCT_TAGS} selected={product} onToggle={(t) => setProduct((p) => toggle(p, t))} color="amber" />
-        <TagGroup label="想定ターゲット層" hint="※性別データが無いため訴求層タグで代替" tags={TARGET_TAGS} selected={target} onToggle={(t) => setTarget((p) => toggle(p, t))} color="pink" />
+        {/* 詳細検索（テイスト等）はトグルで開閉 */}
+        <div className="border-t pt-3">
+          <button onClick={() => setShowDetail((s) => !s)} className="flex items-center gap-1.5 text-xs font-semibold text-gray-600">
+            <span className="text-gray-400">{showDetail ? "▼" : "▶"}</span>
+            詳細検索（テイスト・商品・ターゲット層）
+            {hasTagFilter && <span className="text-[10px] bg-emerald-100 text-emerald-700 rounded-full px-1.5 py-0.5">{atmosphere.length + product.length + target.length}件選択中</span>}
+          </button>
+          {showDetail && (
+            <div className="space-y-4 mt-3">
+              <TagGroup label="雰囲気・テイスト" hint="※工務店データのみ" tags={ATMOSPHERE_TAGS} selected={atmosphere} onToggle={(t) => setAtmosphere((p) => toggle(p, t))} color="emerald" />
+              <TagGroup label="商品・工法" tags={PRODUCT_TAGS} selected={product} onToggle={(t) => setProduct((p) => toggle(p, t))} color="amber" />
+              <TagGroup label="想定ターゲット層" hint="※性別データが無いため訴求層タグで代替" tags={TARGET_TAGS} selected={target} onToggle={(t) => setTarget((p) => toggle(p, t))} color="pink" />
+            </div>
+          )}
+        </div>
 
         {hasFilter && <div className="flex justify-end pt-2 border-t"><button onClick={resetAll} className="text-xs text-gray-400 hover:text-gray-600 underline">リセット</button></div>}
       </div>
 
       <div>
-        <div className="flex items-baseline justify-between mb-3">
-          <h2 className="font-semibold text-gray-700 text-sm">{hasTagFilter ? "おすすめ（一致度順）" : "該当アカウント（フォロワー数順）"}</h2>
-          <span className="text-xs text-gray-400">{results.length}件</span>
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <h2 className="font-semibold text-gray-700 text-sm">
+            {hasTagFilter && !sortKey ? "おすすめ（一致度順）" : "該当アカウント"}
+            <span className="text-xs text-gray-400 font-normal ml-1.5">{results.length}件</span>
+          </h2>
+          <div className="relative">
+            <select value={sortKey} onChange={(e) => setSortKey(e.target.value)}
+              className="appearance-none border rounded-lg pl-2.5 pr-7 py-1.5 text-xs bg-white text-gray-600">
+              <option value="">並べ替え：おすすめ順</option>
+              <option value="foll_desc">フォロワー数：多い順</option>
+              <option value="foll_asc">フォロワー数：少ない順</option>
+              <option value="rating">バック率：高い順</option>
+              <option value="comments">コメント：多い順</option>
+              <option value="name">名前順（あいうえお）</option>
+            </select>
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 text-[10px]">▼</span>
+          </div>
         </div>
         {results.length === 0 ? (
           <div className="bg-gray-50 border border-dashed rounded-xl px-4 py-10 text-center text-sm text-gray-400">条件に一致するアカウントがありません。</div>
         ) : (
           <div className="space-y-2.5">
             {results.slice(0, 300).map((s, i) => (
-              <ResultCard key={keyOf(s.k) + i} a={s.k} rank={i + 1} matched={hasTagFilter ? s.matched : []} onClick={() => setSelected(s.k)} />
+              <ResultCard key={keyOf(s.k) + i} a={s.k} rank={i + 1} matched={hasTagFilter ? s.matched : []} stat={stats[keyOf(s.k)]} onClick={() => setSelected(s.k)} />
             ))}
             {results.length > 300 && <p className="text-center text-xs text-gray-400 py-2">上位300件を表示中（絞り込むと精度が上がります）</p>}
           </div>
         )}
       </div>
 
-      {selected && <DetailModal account={selected} username={username} onClose={() => setSelected(null)} onChanged={loadRecent} />}
+      {selected && <DetailModal account={selected} username={username} onClose={() => setSelected(null)} onChanged={refreshShared} onDeleted={() => { setSelected(null); loadTeam(); refreshShared(); }} />}
       {showAdd && <AddAccountModal username={username} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); loadTeam(); }} />}
     </div>
   );
@@ -302,7 +360,7 @@ export default function FollowPage() {
 }
 
 // ---------------- 詳細モーダル ----------------
-function DetailModal({ account, username, onClose, onChanged }: { account: Account; username: string; onClose: () => void; onChanged: () => void }) {
+function DetailModal({ account, username, onClose, onChanged, onDeleted }: { account: Account; username: string; onClose: () => void; onChanged: () => void; onDeleted: () => void }) {
   const key = keyOf(account);
   const [approaches, setApproaches] = useState<Approach[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -311,6 +369,7 @@ function DetailModal({ account, username, onClose, onChanged }: { account: Accou
   const [method, setMethod] = useState("フォロー");
   const [aNote, setANote] = useState("");
   const [comment, setComment] = useState("");
+  const [rating, setRating] = useState("");
   const [busy, setBusy] = useState(false);
   const [likedIds, setLikedIds] = useState<string[]>([]);
   const igUrl = igUrlOf(account);
@@ -346,14 +405,26 @@ function DetailModal({ account, username, onClose, onChanged }: { account: Accou
     setANote(""); setBusy(false); load();
   }
   async function addComment() {
-    if (!comment.trim()) return;
+    if (!comment.trim() && !rating) return;
     if (!who.trim()) return alert("あなたの名前を入力してください（画面上部）。");
     setBusy(true);
-    await supabase.from("follow_comments").insert({ account_key: key, account_name: account.name, author: who.trim(), body: comment.trim() });
-    setComment(""); setBusy(false); load(); onChanged();
+    await supabase.from("follow_comments").insert({ account_key: key, account_name: account.name, author: who.trim(), body: comment.trim(), rating: rating || null });
+    setComment(""); setRating(""); setBusy(false); load(); onChanged();
   }
   async function delApproach(id: string) { await supabase.from("follow_approaches").delete().eq("id", id); load(); }
   async function delComment(id: string) { await supabase.from("follow_comments").delete().eq("id", id); load(); onChanged(); }
+
+  // チーム追加アカウントの削除（履歴・コメントも一緒に削除）
+  async function deleteAccount() {
+    if (!account.teamId) return;
+    if (!window.confirm(`「${account.name}」を本当に消去しますか？\nこのアカウントに紐づくアプローチ履歴・コメントも一緒に削除されます。この操作は元に戻せません。`)) return;
+    setBusy(true);
+    await supabase.from("follow_approaches").delete().eq("account_key", key);
+    await supabase.from("follow_comments").delete().eq("account_key", key);
+    await supabase.from("follow_accounts").delete().eq("id", account.teamId);
+    setBusy(false);
+    onDeleted();
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
@@ -424,8 +495,9 @@ function DetailModal({ account, username, onClose, onChanged }: { account: Accou
                 <div key={c.id} className="flex items-start gap-2 text-xs bg-gray-50 rounded-lg px-2.5 py-1.5">
                   <div className="flex-1 min-w-0">
                     <span className="font-medium text-gray-700">{c.author}</span>
+                    {c.rating && <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-bold ${RATING_STYLE[c.rating] || "bg-gray-100 text-gray-600"}`}>バック率 {c.rating}</span>}
                     <span className="text-gray-400 ml-1.5">{relTime(c.created_at)}</span>
-                    <p className="text-gray-600 mt-0.5 whitespace-pre-wrap">{c.body}</p>
+                    {c.body && <p className="text-gray-600 mt-0.5 whitespace-pre-wrap">{c.body}</p>}
                   </div>
                   <button onClick={() => toggleLike(c)}
                     className={`flex items-center gap-0.5 flex-shrink-0 ${likedIds.includes(c.id) ? "text-pink-600" : "text-gray-400 hover:text-pink-500"}`}>
@@ -436,12 +508,33 @@ function DetailModal({ account, username, onClose, onChanged }: { account: Accou
                 </div>
               ))}
             </div>
-            <div className="flex gap-2">
-              <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="コメントを追加…" className="border rounded px-2 py-1.5 text-xs flex-1"
-                onKeyDown={(e) => { if (e.key === "Enter") addComment(); }} />
-              <button onClick={addComment} disabled={busy} className="bg-blue-600 text-white text-xs px-3 rounded disabled:opacity-50">投稿</button>
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-gray-500">バック率</span>
+                {RATINGS.map((r) => (
+                  <button key={r} onClick={() => setRating((cur) => cur === r ? "" : r)}
+                    className={`text-xs px-2.5 py-1 rounded-full border ${rating === r ? RATING_STYLE[r] + " border-transparent font-bold" : "bg-white text-gray-500 border-gray-200"}`}>{r}</button>
+                ))}
+                <span className="text-[10px] text-gray-400">（任意）</span>
+              </div>
+              <div className="flex gap-2">
+                <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="コメントを追加…" className="border rounded px-2 py-1.5 text-xs flex-1"
+                  onKeyDown={(e) => { if (e.key === "Enter") addComment(); }} />
+                <button onClick={addComment} disabled={busy} className="bg-blue-600 text-white text-xs px-3 rounded disabled:opacity-50">投稿</button>
+              </div>
             </div>
           </section>
+
+          {/* チーム追加アカウントのみ削除可 */}
+          {account.teamId && (
+            <section className="border-t pt-4">
+              <button onClick={deleteAccount} disabled={busy}
+                className="w-full border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50 text-xs font-medium py-2 rounded-lg">
+                🗑 このアカウントを削除する
+              </button>
+              <p className="text-[10px] text-gray-400 mt-1 text-center">※チームで追加したアカウントのみ削除できます（履歴・コメントも消えます）</p>
+            </section>
+          )}
         </div>
       </div>
     </div>
@@ -533,14 +626,24 @@ function TagGroup({ label, hint, tags, selected, onToggle, color }: { label: str
   );
 }
 
-function ResultCard({ a, rank, matched, onClick }: { a: Account; rank: number; matched: string[]; onClick: () => void }) {
+function ResultCard({ a, rank, matched, stat, onClick }: { a: Account; rank: number; matched: string[]; stat?: { count: number; rateScore: number }; onClick: () => void }) {
+  const igUrl = igUrlOf(a);
+  const rateLabel = stat && stat.rateScore >= 0 ? (stat.rateScore >= 2.5 ? "良" : stat.rateScore >= 1.5 ? "普通" : "悪") : null;
   return (
-    <button onClick={onClick} className="w-full text-left bg-white border rounded-xl p-3.5 sm:p-4 hover:border-gray-300 active:bg-gray-50 transition-colors">
+    <div className="w-full bg-white border rounded-xl p-3.5 sm:p-4 hover:border-gray-300 transition-colors">
       <div className="flex gap-3">
         <span className="text-xl sm:text-2xl font-bold text-gray-200 w-6 sm:w-7 text-center flex-shrink-0 leading-tight">{rank}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <p className="font-semibold text-gray-800 text-sm">{a.name}</p>
+            {/* 社名タップでInstagram（別タブ） */}
+            {igUrl ? (
+              <a href={igUrl} target="_blank" rel="noopener noreferrer"
+                className="font-semibold text-sm text-pink-700 hover:text-pink-800 active:opacity-70 inline-flex items-center gap-0.5">
+                {a.name}<span className="text-[10px] text-pink-400">↗</span>
+              </a>
+            ) : (
+              <span className="font-semibold text-gray-800 text-sm">{a.name}</span>
+            )}
             {a.source === SHOSAN && <Badge c="teal">SHO-SAN運用</Badge>}
             {a.source === BR && <Badge c="slate">他社候補</Badge>}
             {a.source === TEAM && <Badge c="teal">チーム追加</Badge>}
@@ -550,11 +653,13 @@ function ResultCard({ a, rank, matched, onClick }: { a: Account; rank: number; m
           <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500 mt-0.5">
             {a.followers != null && <span>フォロワー {a.followers.toLocaleString()}人</span>}
             {a.prefecture && <span>{a.prefecture}</span>}
+            {stat && stat.count > 0 && <span className="text-gray-400">💬 {stat.count}</span>}
+            {rateLabel && <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${RATING_STYLE[rateLabel]}`}>バック率 {rateLabel}</span>}
           </div>
           {matched.length > 0 && <div className="flex flex-wrap gap-1 mt-2">{matched.map((t) => <span key={t} className="text-[10px] bg-emerald-50 text-emerald-700 rounded px-1.5 py-0.5 font-medium">{t}</span>)}</div>}
-          <p className="text-[11px] text-blue-500 mt-2">詳細・履歴・コメント →</p>
+          <button onClick={onClick} className="text-[11px] text-blue-600 mt-2 hover:underline active:opacity-70">詳細・履歴・コメント →</button>
         </div>
       </div>
-    </button>
+    </div>
   );
 }

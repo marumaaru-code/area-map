@@ -4,11 +4,22 @@ import { useState } from "react";
 import type { Facility } from "@/types";
 import { CATEGORY_LABELS } from "@/types";
 import { upsertFacility } from "@/lib/db";
+import { koumutenSupabase } from "@/lib/koumuten-supabase";
 
 interface Props {
   facility: Facility;
   onClose: () => void;
   onUpdated: (updated: Facility) => void;
+}
+
+const PREFS = ["北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県", "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"];
+function prefFromAddress(addr?: string): string | null {
+  if (!addr) return null;
+  return PREFS.find((p) => addr.includes(p)) || null;
+}
+function handleFromUrl(url: string): string | null {
+  const m = url.match(/instagram\.com\/([A-Za-z0-9_.]+)/);
+  return m ? m[1].replace(/\/$/, "") : null;
 }
 
 export default function FacilityPanel({ facility, onClose, onUpdated }: Props) {
@@ -17,6 +28,35 @@ export default function FacilityPanel({ facility, onClose, onUpdated }: Props) {
   const [memo, setMemo] = useState(facility.concept_memo || "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [followMsg, setFollowMsg] = useState("");
+  const [followBusy, setFollowBusy] = useState(false);
+
+  async function addToFollowTool() {
+    setFollowBusy(true);
+    setFollowMsg("");
+    try {
+      const link = instagramUrl || website || null;
+      const note = [facility.address, memo].filter(Boolean).join(" / ") || null;
+      const { error } = await koumutenSupabase.from("follow_accounts").insert({
+        category: CATEGORY_LABELS[facility.category] || "その他",
+        name: facility.name_ja || facility.name,
+        handle: handleFromUrl(instagramUrl),
+        link,
+        region: null,
+        prefecture: prefFromAddress(facility.address),
+        followers: null,
+        note,
+        created_by: "マップから追加",
+      });
+      if (error) throw error;
+      setFollowMsg("フォロー選定ツールに追加しました");
+    } catch (e) {
+      setFollowMsg("追加に失敗しました。");
+      console.error(e);
+    } finally {
+      setFollowBusy(false);
+    }
+  }
 
   const googleSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(
     (facility.name_ja || facility.name) + " Instagram"
@@ -155,7 +195,7 @@ export default function FacilityPanel({ facility, onClose, onUpdated }: Props) {
         )}
       </div>
 
-      <div className="p-4 border-t">
+      <div className="p-4 border-t space-y-2">
         <button
           onClick={handleSave}
           disabled={saving}
@@ -163,6 +203,16 @@ export default function FacilityPanel({ facility, onClose, onUpdated }: Props) {
         >
           {saving ? "保存中..." : "保存する"}
         </button>
+        <button
+          onClick={addToFollowTool}
+          disabled={followBusy}
+          className="w-full bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-sm font-medium py-2 rounded flex items-center justify-center gap-1"
+        >
+          {followBusy ? "追加中..." : "＋ フォロー選定ツールに追加"}
+        </button>
+        {followMsg && (
+          <p className={`text-xs text-center ${followMsg.includes("失敗") ? "text-red-500" : "text-teal-600"}`}>{followMsg}</p>
+        )}
       </div>
     </div>
   );
